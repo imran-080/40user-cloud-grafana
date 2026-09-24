@@ -34,7 +34,7 @@ jobs:
         run: |
           ./apache-jmeter-5.6.3/bin/jmeter \
             -n \
-            -t View Results tree.jmx \
+            -t View Results Tree.jmx \
             -l results.jtl
 
       - name: Upload JMeter Results
