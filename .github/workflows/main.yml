@@ -59,9 +59,14 @@ jobs:
 
           echo "Sending JMeter results to Grafana Cloud..."
 
+          sample_count=0
+          metric_count=0
+
           while IFS='|' read -r timestamp elapsed label success latency connect; do
 
             [ -z "$timestamp" ] && continue
+
+            sample_count=$((sample_count + 1))
 
             timestamp_seconds=$((timestamp / 1000))
 
@@ -77,6 +82,8 @@ jobs:
             else
               success_value=0
             fi
+
+            echo "Processing sample: $safe_label | timestamp=$timestamp_seconds | elapsed=$elapsed | success=$success"
 
             payload=$(cat <<EOF
           [
@@ -115,17 +122,31 @@ jobs:
               "$GRAFANA_URL" \
               -d "$payload"
 
+            metric_count=$((metric_count + 4))
+
           done < <(
             xmllint --xpath \
               '//*[self::sample or self::httpSample]' \
               results.jtl 2>/dev/null |
             sed 's/></>\n</g' |
-            grep -E '<(sample|httpSample) ' |
-            sed -E \
-              's/.ts="([0-9]+)".*t="([0-9]+)".*lb="([^"])".s="([^"])".lt="([0-9]+)".*ct="([0-9]+)"./\1|\2|\3|\4|\5|\6/'
+            grep -E '^<(sample|httpSample) ' |
+            sed -nE \
+              's/.ts="([0-9]+)".*t="([0-9]+)".*lb="([^"])".s="([^"])".lt="([0-9]+)".*ct="([0-9]+)"./\1|\2|\3|\4|\5|\6/p'
           )
 
-          echo "JMeter metrics sent to Grafana Cloud."
+          echo "----------------------------------------"
+          echo "JMeter samples processed: $sample_count"
+          echo "Grafana metrics sent:     $metric_count"
+          echo "----------------------------------------"
+
+          if [ "$sample_count" -eq 0 ]; then
+            echo "ERROR: No JMeter samples were extracted from results.jtl."
+            echo "Checking results.jtl content..."
+            head -30 results.jtl
+            exit 1
+          fi
+
+          echo "JMeter metrics sent to Grafana Cloud successfully."
 
       - name: Upload JMeter results
         uses: actions/upload-artifact@v4
