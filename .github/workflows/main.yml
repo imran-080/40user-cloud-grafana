@@ -31,16 +31,14 @@ jobs:
         run: |
           set -e
 
-          echo "Downloading Apache JMeter 5.6.3..."
+          echo "========================================"
+          echo "Downloading Apache JMeter 5.6.3"
+          echo "========================================"
 
           wget -q \
             https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-5.6.3.tgz
 
-          echo "Extracting JMeter..."
-
           tar -xzf apache-jmeter-5.6.3.tgz
-
-          echo "JMeter installed successfully."
 
           ./apache-jmeter-5.6.3/bin/jmeter --version
 
@@ -51,30 +49,51 @@ jobs:
         run: |
           set -e
 
-          echo "Installing JMeter Plugins Manager..."
+          echo "========================================"
+          echo "Installing JMeter Plugins Manager"
+          echo "========================================"
 
+          # CmdRunner required by PluginsManagerCMD
           wget -q \
             https://repo1.maven.org/maven2/kg/apc/cmdrunner/2.3/cmdrunner-2.3.jar \
             -O apache-jmeter-5.6.3/lib/cmdrunner-2.3.jar
 
+          # Plugins Manager JAR
           wget -q \
             https://jmeter-plugins.org/get/ \
             -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar
 
-          echo "Plugins Manager installed."
+          echo "Creating PluginsManagerCMD launcher..."
+
+          java \
+            -cp "apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar" \
+            org.jmeterplugins.repository.PluginManagerCMDInstaller
+
+          echo "Checking launcher..."
+
+          ls -l apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
+
+          echo "Plugins Manager installed successfully."
 
       # ==========================================================
-      # 5. Install Ultimate Thread Group plugin
+      # 5. Install Ultimate Thread Group
       # ==========================================================
       - name: Install Ultimate Thread Group plugin
         run: |
           set -e
 
-          echo "Installing Ultimate Thread Group plugin..."
+          echo "========================================"
+          echo "Installing Ultimate Thread Group"
+          echo "========================================"
 
-          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh install jpgc-casutg
+          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh \
+            install jpgc-casutg
 
-          echo "Ultimate Thread Group plugin installed."
+          echo "========================================"
+          echo "Checking Ultimate Thread Group plugin"
+          echo "========================================"
+
+          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh status
 
       # ==========================================================
       # 6. Run JMeter test
@@ -102,7 +121,7 @@ jobs:
 
           ls -lh results.jtl
 
-          echo "Checking JMeter HTML report..."
+          echo "Checking HTML report..."
 
           ls -lh jmeter-report
 
@@ -133,7 +152,7 @@ jobs:
           print("Reading results.jtl...")
 
           # ======================================================
-          # Read JMeter XML result file
+          # Read JTL
           # ======================================================
 
           try:
@@ -148,7 +167,7 @@ jobs:
           sample_count = 0
 
           # ======================================================
-          # Process top-level JMeter samples
+          # Process top-level samples
           # ======================================================
 
           for sample in root.findall("sample"):
@@ -167,10 +186,7 @@ jobs:
 
               timestamp_seconds = int(timestamp) // 1000
 
-              # --------------------------------------------------
-              # Make sampler name safe for Graphite
-              # --------------------------------------------------
-
+              # Make Graphite-safe sampler name
               safe_label = "".join(
                   c if c.isalnum() or c in "_.-" else "_"
                   for c in label
@@ -191,10 +207,7 @@ jobs:
                   f"success={success}"
               )
 
-              # --------------------------------------------------
               # Response time
-              # --------------------------------------------------
-
               metrics.append({
                   "name": f"jmeter.{safe_label}.response_time",
                   "interval": 1,
@@ -202,10 +215,7 @@ jobs:
                   "time": timestamp_seconds
               })
 
-              # --------------------------------------------------
               # Success
-              # --------------------------------------------------
-
               metrics.append({
                   "name": f"jmeter.{safe_label}.success",
                   "interval": 1,
@@ -213,10 +223,7 @@ jobs:
                   "time": timestamp_seconds
               })
 
-              # --------------------------------------------------
               # Latency
-              # --------------------------------------------------
-
               metrics.append({
                   "name": f"jmeter.{safe_label}.latency",
                   "interval": 1,
@@ -224,10 +231,7 @@ jobs:
                   "time": timestamp_seconds
               })
 
-              # --------------------------------------------------
               # Connection time
-              # --------------------------------------------------
-
               metrics.append({
                   "name": f"jmeter.{safe_label}.connect_time",
                   "interval": 1,
@@ -236,7 +240,7 @@ jobs:
               })
 
           # ======================================================
-          # Validate extraction
+          # Validate
           # ======================================================
 
           print("----------------------------------------")
@@ -246,10 +250,6 @@ jobs:
 
           if sample_count == 0:
               print("ERROR: No JMeter samples were found.")
-              print(
-                  "The JTL file exists but no top-level "
-                  "<sample> elements were found."
-              )
               raise SystemExit(1)
 
           if len(metrics) == 0:
@@ -257,7 +257,7 @@ jobs:
               raise SystemExit(1)
 
           # ======================================================
-          # Send metrics in batches
+          # Send to Grafana Cloud
           # ======================================================
 
           batch_size = 500
@@ -275,7 +275,6 @@ jobs:
                   method="POST"
               )
 
-              # Grafana Cloud Graphite authentication
               request.add_header(
                   "Authorization",
                   f"Bearer 3609143:{GRAFANA_TOKEN}"
@@ -298,10 +297,7 @@ jobs:
                   with urllib.request.urlopen(request) as response:
 
                       status = response.status
-
-                      response_body = (
-                          response.read().decode()
-                      )
+                      response_body = response.read().decode()
 
                       print(
                           f"Grafana response: HTTP {status}"
@@ -309,7 +305,7 @@ jobs:
 
                       if response_body:
                           print(
-                              "Grafana response body: "
+                              f"Grafana response body: "
                               f"{response_body}"
                           )
 
@@ -321,7 +317,7 @@ jobs:
               except urllib.error.HTTPError as e:
 
                   print(
-                      "ERROR: Grafana HTTP error "
+                      f"ERROR: Grafana HTTP error "
                       f"{e.code} {e.reason}"
                   )
 
