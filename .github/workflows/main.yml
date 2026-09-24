@@ -1,56 +1,4 @@
-name: JMeter Performance Test
-
-on:
-  workflow_dispatch:
-
-jobs:
-  jmeter:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Download JMeter 5.6.3
-        run: |
-          wget -q https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-5.6.3.tgz
-          tar -xzf apache-jmeter-5.6.3.tgz
-
-      - name: Install JMeter Plugins Manager
-        run: |
-          wget -q \
-            https://jmeter-plugins.org/get/ \
-            -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar
-
-          wget -q \
-            https://repo1.maven.org/maven2/kg/apc/cmdrunner/2.3/cmdrunner-2.3.jar \
-            -O apache-jmeter-5.6.3/lib/cmdrunner-2.3.jar
-
-          java \
-            -cp apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
-            org.jmeterplugins.repository.PluginManagerCMDInstaller
-
-          chmod +x apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
-
-      - name: Install Ultimate Thread Group plugin
-        run: |
-          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh install jpgc-casutg
-
-      - name: Run JMeter 5.6.3
-        run: |
-          ./apache-jmeter-5.6.3/bin/jmeter \
-            -n \
-            -t "View Results Tree.jmx" \
-            -l results.jtl \
-            -Jjmeter.save.saveservice.output_format=xml
-
-      - name: Send JMeter results to Grafana Cloud
+- name: Send JMeter results to Grafana Cloud
         env:
           GRAFANA_URL: ${{ secrets.GRAFANA_GRAPHITE_URL }}
           GRAFANA_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
@@ -59,97 +7,159 @@ jobs:
 
           echo "Sending JMeter results to Grafana Cloud..."
 
-          sample_count=0
-          metric_count=0
+          python3 <<'PY'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+          import xml.etree.ElementTree as ET
 
-          while IFS='|' read -r timestamp elapsed label success latency connect; do
+          GRAFANA_URL = os.environ["GRAFANA_URL"]
+          GRAFANA_TOKEN = os.environ["GRAFANA_TOKEN"]
 
-            [ -z "$timestamp" ] && continue
+          print("Reading results.jtl...")
 
-            sample_count=$((sample_count + 1))
+          tree = ET.parse("results.jtl")
+          root = tree.getroot()
 
-            timestamp_seconds=$((timestamp / 1000))
+          metrics = []
+          sample_count = 0
 
-            safe_label=$(printf '%s' "$label" | \
-              sed 's/[^A-Za-z0-9_.-]/_/g')
+          # Process all JMeter sample elements
+          for sample in root.iter("sample"):
 
-            if [ -z "$safe_label" ]; then
-              safe_label="unknown"
-            fi
+              timestamp = sample.attrib.get("ts")
+              elapsed = sample.attrib.get("t", "0")
+              label = sample.attrib.get("lb", "unknown")
+              success = sample.attrib.get("s", "false")
+              latency = sample.attrib.get("lt", "0")
+              connect = sample.attrib.get("ct", "0")
 
-            if [ "$success" = "true" ]; then
-              success_value=1
-            else
-              success_value=0
-            fi
+              if not timestamp:
+                  continue
 
-            echo "Processing sample: $safe_label | timestamp=$timestamp_seconds | elapsed=$elapsed | success=$success"
+              sample_count += 1
 
-            payload=$(cat <<EOF
-          [
-            {
-              "name": "jmeter.${safe_label}.response_time",
-              "interval": 1,
-              "value": ${elapsed:-0},
-              "time": ${timestamp_seconds}
-            },
-            {
-              "name": "jmeter.${safe_label}.success",
-              "interval": 1,
-              "value": ${success_value},
-              "time": ${timestamp_seconds}
-            },
-            {
-              "name": "jmeter.${safe_label}.latency",
-              "interval": 1,
-              "value": ${latency:-0},
-              "time": ${timestamp_seconds}
-            },
-            {
-              "name": "jmeter.${safe_label}.connect_time",
-              "interval": 1,
-              "value": ${connect:-0},
-              "time": ${timestamp_seconds}
-            }
-          ]
-          EOF
-          )
+              timestamp_seconds = int(timestamp) // 1000
 
-            curl -sS -f \
-              -X POST \
-              -H "Authorization: Bearer 3609143:${GRAFANA_TOKEN}" \
-              -H "Content-Type: application/json" \
-              "$GRAFANA_URL" \
-              -d "$payload"
+              safe_label = "".join(
+                  c if c.isalnum() or c in ".-" else ""
+                  for c in label
+              )
 
-            metric_count=$((metric_count + 4))
+              if not safe_label:
+                  safe_label = "unknown"
 
-          done < <(
-            xmllint --xpath \
-              '//*[self::sample or self::httpSample]' \
-              results.jtl 2>/dev/null |
-            sed 's/></>\n</g' |
-            grep -E '^<(sample|httpSample) ' |
-            sed -nE \
-              's/.ts="([0-9]+)".*t="([0-9]+)".*lb="([^"])".s="([^"])".lt="([0-9]+)".*ct="([0-9]+)"./\1|\2|\3|\4|\5|\6/p'
-          )
+              success_value = 1 if success == "true" else 0
 
-          echo "----------------------------------------"
-          echo "JMeter samples processed: $sample_count"
-          echo "Grafana metrics sent:     $metric_count"
-          echo "----------------------------------------"
+              print(
+                  f"Processing sample {sample_count}: "
+                  f"{safe_label} | "
+                  f"time={timestamp_seconds} | "
+                  f"elapsed={elapsed}ms | "
+                  f"success={success}"
+              )
 
-          if [ "$sample_count" -eq 0 ]; then
-            echo "ERROR: No JMeter samples were extracted from results.jtl."
-            echo "Checking results.jtl content..."
-            head -30 results.jtl
-            exit 1
-          fi
+              metrics.append({
+                  "name": f"jmeter.{safe_label}.response_time",
+                  "interval": 1,
+                  "value": float(elapsed),
+                  "time": timestamp_seconds
+              })
 
-          echo "JMeter metrics sent to Grafana Cloud successfully."
+              metrics.append({
+                  "name": f"jmeter.{safe_label}.success",
+                  "interval": 1,
+                  "value": success_value,
+                  "time": timestamp_seconds
+              })
 
-      - name: Upload JMeter results
-        uses: actions/upload-artifact@v4
-        with:
-          name: jmeter-results
-          path: results.jtl
+              metrics.append({
+                  "name": f"jmeter.{safe_label}.latency",
+                  "interval": 1,
+                  "value": float(latency),
+                  "time": timestamp_seconds
+              })
+
+              metrics.append({
+                  "name": f"jmeter.{safe_label}.connect_time",
+                  "interval": 1,
+                  "value": float(connect),
+                  "time": timestamp_seconds
+              )
+
+          print("----------------------------------------")
+          print(f"JMeter samples processed: {sample_count}")
+          print(f"Grafana metrics prepared: {len(metrics)}")
+          print("----------------------------------------")
+
+          if sample_count == 0:
+              print("ERROR: No JMeter samples found.")
+              raise SystemExit(1)
+
+          # Send in batches instead of one HTTP request per sample
+          batch_size = 500
+          total_sent = 0
+
+          for i in range(0, len(metrics), batch_size):
+
+              batch = metrics[i:i + batch_size]
+
+              payload = json.dumps(batch).encode("utf-8")
+
+              request = urllib.request.Request(
+                  GRAFANA_URL,
+                  data=payload,
+                  method="POST"
+              )
+
+              request.add_header(
+                  "Authorization",
+                  f"Bearer 3609143:{GRAFANA_TOKEN}"
+              )
+
+              request.add_header(
+                  "Content-Type",
+                  "application/json"
+              )
+
+              print(
+                  f"Sending metrics batch "
+                  f"{(i // batch_size) + 1} "
+                  f"({len(batch)} metrics)..."
+              )
+
+              try:
+                  with urllib.request.urlopen(request) as response:
+                      status = response.status
+                      response_body = response.read().decode()
+
+                      print(
+                          f"Grafana response: HTTP {status}"
+                      )
+
+                      if response_body:
+                          print(response_body)
+
+                      if status < 200 or status >= 300:
+                          raise RuntimeError(
+                              f"Grafana returned HTTP {status}"
+                          )
+
+              except urllib.error.HTTPError as e:
+                  print(
+                      f"Grafana HTTP error: "
+                      f"{e.code} {e.reason}"
+                  )
+                  print(e.read().decode())
+                  raise
+
+              total_sent += len(batch)
+
+          print("----------------------------------------")
+          print(f"JMeter samples processed: {sample_count}")
+          print(f"Grafana metrics sent:     {total_sent}")
+          print("----------------------------------------")
+          print("JMeter metrics sent to Grafana Cloud successfully.")
+
+          PY
