@@ -26,15 +26,20 @@ jobs:
         run: |
           wget -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
             https://jmeter-plugins.org/get/
-          java -jar apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
-            --action install \
-            --plugins jpgc-casutg
+
+          wget -O apache-jmeter-5.6.3/lib/cmdrunner-2.0.jar \
+            https://repo1.maven.org/maven2/kg/apc/cmdrunner/2.0/cmdrunner-2.0.jar
+
+          java -cp apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
+            org.jmeterplugins.repository.PluginManagerCMDInstaller
+
+          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh install jpgc-casutg
 
       - name: Run JMeter
         run: |
           ./apache-jmeter-5.6.3/bin/jmeter \
             -n \
-            -t View Results Tree.jmx \
+            -t "View Results Tree.jmx" \
             -l results.jtl
 
       - name: Upload JMeter Results
