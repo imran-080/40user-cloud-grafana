@@ -1,0 +1,44 @@
+name: JMeter Performance Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  jmeter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download JMeter 5.6.3
+        run: |
+          wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          tar -xzf apache-jmeter-5.6.3.tgz
+
+      - name: Install Ultimate Thread Group
+        run: |
+          wget -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
+            https://jmeter-plugins.org/get/
+          java -jar apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
+            --action install \
+            --plugins jpgc-casutg
+
+      - name: Run JMeter
+        run: |
+          ./apache-jmeter-5.6.3/bin/jmeter \
+            -n \
+            -t View Results tree.jmx \
+            -l results.jtl
+
+      - name: Upload JMeter Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmeter-results
+          path: results.jtl
