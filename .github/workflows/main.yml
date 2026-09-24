@@ -38,10 +38,9 @@ jobs:
 
           chmod +x apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
 
-      - name: Install plugins required by JMX
+      - name: Install Ultimate Thread Group plugin
         run: |
-          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh \
-            install-for-jmx "View Results Tree.jmx"
+          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh install jpgc-casutg
 
       - name: Run JMeter 5.6.3
         run: |
