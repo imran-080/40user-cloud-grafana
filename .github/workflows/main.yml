@@ -1,4 +1,14 @@
-   name: Test Grafana Cloud
+name: Test Grafana Cloud
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-grafana:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test Grafana Cloud
         run: |
           NOW=$(date +%s)
 
