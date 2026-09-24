@@ -22,7 +22,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       # ==========================================================
       # 3. Download JMeter 5.6.3
@@ -38,7 +38,11 @@ jobs:
           wget -q \
             https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-5.6.3.tgz
 
+          echo "Extracting JMeter..."
+
           tar -xzf apache-jmeter-5.6.3.tgz
+
+          echo "Checking JMeter version..."
 
           ./apache-jmeter-5.6.3/bin/jmeter --version
 
@@ -53,12 +57,12 @@ jobs:
           echo "Installing JMeter Plugins Manager"
           echo "========================================"
 
-          # CmdRunner required by PluginsManagerCMD
+          # CmdRunner
           wget -q \
             https://repo1.maven.org/maven2/kg/apc/cmdrunner/2.3/cmdrunner-2.3.jar \
             -O apache-jmeter-5.6.3/lib/cmdrunner-2.3.jar
 
-          # Plugins Manager JAR
+          # Plugins Manager
           wget -q \
             https://jmeter-plugins.org/get/ \
             -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar
@@ -69,16 +73,16 @@ jobs:
             -cp "apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar" \
             org.jmeterplugins.repository.PluginManagerCMDInstaller
 
-          echo "Checking launcher..."
+          echo "Checking PluginsManagerCMD launcher..."
 
-          ls -l apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
+          test -f apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
 
           echo "Plugins Manager installed successfully."
 
       # ==========================================================
       # 5. Install Ultimate Thread Group
       # ==========================================================
-      - name: Install Ultimate Thread Group plugin
+      - name: Install Ultimate Thread Group
         run: |
           set -e
 
@@ -89,14 +93,27 @@ jobs:
           apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh \
             install jpgc-casutg
 
-          echo "========================================"
-          echo "Checking Ultimate Thread Group plugin"
-          echo "========================================"
-
-          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh status
+          echo "Ultimate Thread Group installed."
 
       # ==========================================================
-      # 6. Run JMeter test
+      # 6. Verify JMX file
+      # ==========================================================
+      - name: Verify JMX file
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "Checking JMX file"
+          echo "========================================"
+
+          test -f "View Results Tree.jmx"
+
+          ls -lh "View Results Tree.jmx"
+
+          echo "JMX file found successfully."
+
+      # ==========================================================
+      # 7. Run JMeter
       # ==========================================================
       - name: Run JMeter 5.6.3
         run: |
@@ -110,6 +127,9 @@ jobs:
             -n \
             -t "View Results Tree.jmx" \
             -l results.jtl \
+            -Jjmeter.save.saveservice.output_format=csv \
+            -Jjmeter.save.saveservice.print_field_names=true \
+            -Jjmeter.save.saveservice.timestamp_format=ms \
             -e \
             -o jmeter-report
 
@@ -119,14 +139,18 @@ jobs:
 
           echo "Checking results.jtl..."
 
+          test -f results.jtl
+
           ls -lh results.jtl
 
-          echo "Checking HTML report..."
+          echo "========================================"
+          echo "First 5 lines of results.jtl"
+          echo "========================================"
 
-          ls -lh jmeter-report
+          head -n 5 results.jtl
 
       # ==========================================================
-      # 7. Send JMeter results to Grafana Cloud
+      # 8. Send JMeter results to Grafana Cloud
       # ==========================================================
       - name: Send JMeter results to Grafana Cloud
         env:
@@ -141,133 +165,216 @@ jobs:
 
           python3 <<'PY'
           import os
+          import csv
           import json
           import urllib.request
           import urllib.error
-          import xml.etree.ElementTree as ET
 
           GRAFANA_URL = os.environ["GRAFANA_URL"]
           GRAFANA_TOKEN = os.environ["GRAFANA_TOKEN"]
 
           print("Reading results.jtl...")
 
-          # ======================================================
-          # Read JTL
-          # ======================================================
-
-          try:
-              tree = ET.parse("results.jtl")
-              root = tree.getroot()
-
-          except Exception as e:
-              print(f"ERROR: Could not read results.jtl: {e}")
-              raise SystemExit(1)
-
           metrics = []
           sample_count = 0
 
           # ======================================================
-          # Process top-level samples
+          # Read JMeter CSV JTL
           # ======================================================
 
-          for sample in root.findall("sample"):
+          try:
 
-              timestamp = sample.attrib.get("ts")
-              elapsed = sample.attrib.get("t", "0")
-              label = sample.attrib.get("lb", "unknown")
-              success = sample.attrib.get("s", "false")
-              latency = sample.attrib.get("lt", "0")
-              connect = sample.attrib.get("ct", "0")
+              with open(
+                  "results.jtl",
+                  "r",
+                  encoding="utf-8-sig",
+                  newline=""
+              ) as file:
 
-              if not timestamp:
-                  continue
+                  reader = csv.DictReader(file)
 
-              sample_count += 1
+                  print("----------------------------------------")
+                  print("JTL columns detected:")
+                  print(reader.fieldnames)
+                  print("----------------------------------------")
 
-              timestamp_seconds = int(timestamp) // 1000
+                  if not reader.fieldnames:
+                      print("ERROR: JTL file has no header.")
+                      raise SystemExit(1)
 
-              # Make Graphite-safe sampler name
-              safe_label = "".join(
-                  c if c.isalnum() or c in "_.-" else "_"
-                  for c in label
-              )
+                  required_columns = [
+                      "timeStamp",
+                      "elapsed",
+                      "label",
+                      "success"
+                  ]
 
-              if not safe_label:
-                  safe_label = "unknown"
+                  missing_columns = [
+                      column
+                      for column in required_columns
+                      if column not in reader.fieldnames
+                  ]
 
-              success_value = (
-                  1 if success.lower() == "true" else 0
-              )
+                  if missing_columns:
+                      print(
+                          "ERROR: Missing required JTL columns: "
+                          f"{missing_columns}"
+                      )
+                      raise SystemExit(1)
+
+                  # ==================================================
+                  # Process samples
+                  # ==================================================
+
+                  for row in reader:
+
+                      timestamp = row.get("timeStamp")
+                      elapsed = row.get("elapsed", "0")
+                      label = row.get("label", "unknown")
+                      success = row.get("success", "false")
+                      latency = row.get("Latency", "0")
+                      connect = row.get("Connect", "0")
+
+                      if not timestamp:
+                          continue
+
+                      sample_count += 1
+
+                      timestamp_seconds = int(timestamp) // 1000
+
+                      # ----------------------------------------------
+                      # Make sampler name Graphite-safe
+                      # ----------------------------------------------
+
+                      safe_label = "".join(
+                          c
+                          if c.isalnum() or c in "_.-"
+                          else "_"
+                          for c in label
+                      )
+
+                      if not safe_label:
+                          safe_label = "unknown"
+
+                      success_value = (
+                          1
+                          if str(success).lower() == "true"
+                          else 0
+                      )
+
+                      print(
+                          f"Processing sample {sample_count}: "
+                          f"{safe_label} | "
+                          f"timestamp={timestamp_seconds} | "
+                          f"elapsed={elapsed}ms | "
+                          f"success={success}"
+                      )
+
+                      # ----------------------------------------------
+                      # Response time
+                      # ----------------------------------------------
+
+                      metrics.append({
+                          "name":
+                              f"jmeter.{safe_label}.response_time",
+                          "interval": 1,
+                          "value": float(elapsed or 0),
+                          "time": timestamp_seconds
+                      })
+
+                      # ----------------------------------------------
+                      # Success
+                      # ----------------------------------------------
+
+                      metrics.append({
+                          "name":
+                              f"jmeter.{safe_label}.success",
+                          "interval": 1,
+                          "value": success_value,
+                          "time": timestamp_seconds
+                      })
+
+                      # ----------------------------------------------
+                      # Latency
+                      # ----------------------------------------------
+
+                      metrics.append({
+                          "name":
+                              f"jmeter.{safe_label}.latency",
+                          "interval": 1,
+                          "value": float(latency or 0),
+                          "time": timestamp_seconds
+                      })
+
+                      # ----------------------------------------------
+                      # Connection time
+                      # ----------------------------------------------
+
+                      metrics.append({
+                          "name":
+                              f"jmeter.{safe_label}.connect_time",
+                          "interval": 1,
+                          "value": float(connect or 0),
+                          "time": timestamp_seconds
+                      })
+
+          except FileNotFoundError:
+
+              print("ERROR: results.jtl was not found.")
+              raise SystemExit(1)
+
+          except Exception as e:
 
               print(
-                  f"Processing sample {sample_count}: "
-                  f"{safe_label} | "
-                  f"timestamp={timestamp_seconds} | "
-                  f"elapsed={elapsed}ms | "
-                  f"success={success}"
+                  f"ERROR: Could not read results.jtl: {e}"
               )
-
-              # Response time
-              metrics.append({
-                  "name": f"jmeter.{safe_label}.response_time",
-                  "interval": 1,
-                  "value": float(elapsed or 0),
-                  "time": timestamp_seconds
-              })
-
-              # Success
-              metrics.append({
-                  "name": f"jmeter.{safe_label}.success",
-                  "interval": 1,
-                  "value": success_value,
-                  "time": timestamp_seconds
-              })
-
-              # Latency
-              metrics.append({
-                  "name": f"jmeter.{safe_label}.latency",
-                  "interval": 1,
-                  "value": float(latency or 0),
-                  "time": timestamp_seconds
-              })
-
-              # Connection time
-              metrics.append({
-                  "name": f"jmeter.{safe_label}.connect_time",
-                  "interval": 1,
-                  "value": float(connect or 0),
-                  "time": timestamp_seconds
-              })
+              raise SystemExit(1)
 
           # ======================================================
-          # Validate
+          # Validate extracted samples
           # ======================================================
 
-          print("----------------------------------------")
-          print(f"JMeter samples processed: {sample_count}")
-          print(f"Grafana metrics prepared: {len(metrics)}")
-          print("----------------------------------------")
+          print("========================================")
+          print(
+              f"JMeter samples processed: {sample_count}"
+          )
+          print(
+              f"Grafana metrics prepared: {len(metrics)}"
+          )
+          print("========================================")
 
           if sample_count == 0:
-              print("ERROR: No JMeter samples were found.")
+              print(
+                  "ERROR: No JMeter samples were found."
+              )
               raise SystemExit(1)
 
           if len(metrics) == 0:
-              print("ERROR: No Grafana metrics were generated.")
+              print(
+                  "ERROR: No Grafana metrics were generated."
+              )
               raise SystemExit(1)
 
           # ======================================================
-          # Send to Grafana Cloud
+          # Send metrics to Grafana Cloud
           # ======================================================
 
           batch_size = 500
           total_sent = 0
 
-          for start in range(0, len(metrics), batch_size):
+          for start in range(
+              0,
+              len(metrics),
+              batch_size
+          ):
 
-              batch = metrics[start:start + batch_size]
+              batch = metrics[
+                  start:start + batch_size
+              ]
 
-              payload = json.dumps(batch).encode("utf-8")
+              payload = json.dumps(
+                  batch
+              ).encode("utf-8")
 
               request = urllib.request.Request(
                   GRAFANA_URL,
@@ -285,33 +392,45 @@ jobs:
                   "application/json"
               )
 
-              batch_number = (start // batch_size) + 1
+              batch_number = (
+                  start // batch_size
+              ) + 1
 
               print(
-                  f"Sending Grafana batch {batch_number}: "
+                  f"Sending Grafana batch "
+                  f"{batch_number}: "
                   f"{len(batch)} metrics"
               )
 
               try:
 
-                  with urllib.request.urlopen(request) as response:
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=30
+                  ) as response:
 
                       status = response.status
-                      response_body = response.read().decode()
+
+                      response_body = (
+                          response.read()
+                          .decode()
+                      )
 
                       print(
-                          f"Grafana response: HTTP {status}"
+                          f"Grafana response: "
+                          f"HTTP {status}"
                       )
 
                       if response_body:
                           print(
-                              f"Grafana response body: "
+                              "Grafana response body: "
                               f"{response_body}"
                           )
 
                       if status < 200 or status >= 300:
                           raise RuntimeError(
-                              f"Grafana returned HTTP {status}"
+                              f"Grafana returned "
+                              f"HTTP {status}"
                           )
 
               except urllib.error.HTTPError as e:
@@ -322,7 +441,9 @@ jobs:
                   )
 
                   try:
-                      print(e.read().decode())
+                      print(
+                          e.read().decode()
+                      )
                   except Exception:
                       pass
 
@@ -331,7 +452,8 @@ jobs:
               except Exception as e:
 
                   print(
-                      f"ERROR sending metrics to Grafana: {e}"
+                      "ERROR sending metrics "
+                      f"to Grafana: {e}"
                   )
 
                   raise SystemExit(1)
@@ -344,21 +466,24 @@ jobs:
 
           print("========================================")
           print(
-              f"JMeter samples processed: {sample_count}"
+              f"JMeter samples processed: "
+              f"{sample_count}"
           )
           print(
-              f"Grafana metrics sent:     {total_sent}"
+              f"Grafana metrics sent:     "
+              f"{total_sent}"
           )
           print("========================================")
 
           print(
-              "JMeter metrics sent to Grafana Cloud successfully."
+              "JMeter metrics sent to "
+              "Grafana Cloud successfully."
           )
 
           PY
 
       # ==========================================================
-      # 8. Upload JMeter results
+      # 9. Upload JMeter results
       # ==========================================================
       - name: Upload JMeter results
         uses: actions/upload-artifact@v4
