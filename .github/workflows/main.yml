@@ -1,19 +1,135 @@
-name: Test Grafana Cloud
+name: JMeter Performance Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-grafana:
+  jmeter:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test Grafana Cloud
-        run: |
-          NOW=$(date +%s)
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          curl -sS -X POST \
-            -H "Authorization: Bearer 3609143:${{ secrets.GRAFANA_CLOUD_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "${{ secrets.GRAFANA_GRAPHITE_URL }}" \
-            -d "[{\"name\":\"jmeter.github_test\",\"interval\":10,\"value\":1,\"time\":$NOW}]"
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download JMeter 5.6.3
+        run: |
+          wget -q https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          tar -xzf apache-jmeter-5.6.3.tgz
+
+      - name: Install JMeter Plugins Manager
+        run: |
+          wget -q \
+            https://jmeter-plugins.org/get/ \
+            -O apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar
+
+          wget -q \
+            https://repo1.maven.org/maven2/kg/apc/cmdrunner/2.2.1/cmdrunner-2.2.1.jar \
+            -O apache-jmeter-5.6.3/lib/cmdrunner-2.2.1.jar
+
+          java \
+            -cp apache-jmeter-5.6.3/lib/ext/jmeter-plugins-manager.jar \
+            org.jmeterplugins.repository.PluginManagerCMDInstaller
+
+          chmod +x apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh
+
+      - name: Install plugins required by JMX
+        run: |
+          apache-jmeter-5.6.3/bin/PluginsManagerCMD.sh \
+            install-for-jmx "View Results Tree.jmx"
+
+      - name: Run JMeter 5.6.3
+        run: |
+          ./apache-jmeter-5.6.3/bin/jmeter \
+            -n \
+            -t "View Results Tree.jmx" \
+            -l results.jtl \
+            -Jjmeter.save.saveservice.output_format=xml
+
+      - name: Send JMeter results to Grafana Cloud
+        env:
+          GRAFANA_URL: ${{ secrets.GRAFANA_GRAPHITE_URL }}
+          GRAFANA_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
+        run: |
+          set -e
+
+          echo "Sending JMeter results to Grafana Cloud..."
+
+          while IFS='|' read -r timestamp elapsed label success latency connect; do
+
+            [ -z "$timestamp" ] && continue
+
+            timestamp_seconds=$((timestamp / 1000))
+
+            safe_label=$(printf '%s' "$label" | \
+              sed 's/[^A-Za-z0-9_.-]/_/g')
+
+            if [ -z "$safe_label" ]; then
+              safe_label="unknown"
+            fi
+
+            if [ "$success" = "true" ]; then
+              success_value=1
+            else
+              success_value=0
+            fi
+
+            payload=$(cat <<EOF
+          [
+            {
+              "name": "jmeter.${safe_label}.response_time",
+              "interval": 1,
+              "value": ${elapsed:-0},
+              "time": ${timestamp_seconds}
+            },
+            {
+              "name": "jmeter.${safe_label}.success",
+              "interval": 1,
+              "value": ${success_value},
+              "time": ${timestamp_seconds}
+            },
+            {
+              "name": "jmeter.${safe_label}.latency",
+              "interval": 1,
+              "value": ${latency:-0},
+              "time": ${timestamp_seconds}
+            },
+            {
+              "name": "jmeter.${safe_label}.connect_time",
+              "interval": 1,
+              "value": ${connect:-0},
+              "time": ${timestamp_seconds}
+            }
+          ]
+          EOF
+          )
+
+            curl -sS -f \
+              -X POST \
+              -H "Authorization: Bearer 3609143:${GRAFANA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "$GRAFANA_URL" \
+              -d "$payload"
+
+          done < <(
+            xmllint --xpath \
+              '//*[self::sample or self::httpSample]' \
+              results.jtl 2>/dev/null |
+            sed 's/></>\n</g' |
+            grep -E '<(sample|httpSample) ' |
+            sed -E \
+              's/.ts="([0-9]+)".*t="([0-9]+)".*lb="([^"])".s="([^"])".lt="([0-9]+)".*ct="([0-9]+)"./\1|\2|\3|\4|\5|\6/'
+          )
+
+          echo "JMeter metrics sent to Grafana Cloud."
+
+      - name: Upload JMeter results
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmeter-results
+          path: results.jtl
