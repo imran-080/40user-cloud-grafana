@@ -1,4 +1,4 @@
-- name: Send JMeter results to Grafana Cloud
+    name: Send JMeter results to Grafana Cloud
         env:
           GRAFANA_URL: ${{ secrets.GRAFANA_GRAPHITE_URL }}
           GRAFANA_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
