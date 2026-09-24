@@ -1,4 +1,4 @@
-- name: Test Grafana Cloud
+   name: Test Grafana Cloud
         run: |
           NOW=$(date +%s)
 
