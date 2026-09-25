@@ -10,13 +10,6 @@ jobs:
     steps:
 
       # ==========================================================
-      # 0. Grafana live dashboard
-      # ==========================================================
-      - name: Grafana live dashboard
-        run: echo "Grafana: https://gracefulwillow1732.grafana.net/d/shzmhd2/launch-resp-time?from=now-15m&to=now&timezone=browser&refresh=auto"
-
-
-      # ==========================================================
       # 1. Checkout repository
       # ==========================================================
       - name: Checkout repository
